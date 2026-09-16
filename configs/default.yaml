@@ -1,0 +1,27 @@
+# Tiny LoRA fine-tune demo config (CPU / learning only)
+seed: 42
+
+data:
+  n_train: 256
+  n_test: 64
+  n_features: 16
+  n_classes: 3
+  noise: 0.15
+
+model:
+  hidden_dim: 32
+  # Base weights are frozen; only LoRA adapters train.
+
+lora:
+  rank: 4
+  alpha: 8.0
+  # Effective scale = alpha / rank (standard LoRA)
+
+train:
+  epochs: 50
+  lr: 0.1
+  batch_size: 32
+  l2: 1.0e-4
+
+eval:
+  report_before_after: true
