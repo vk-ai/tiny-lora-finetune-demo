@@ -25,7 +25,7 @@ This repo is that slice.
 | `configs/default.yaml` | LoRA `rank` / `alpha`, data & train knobs |
 | `evals/runner.py` | CI-friendly eval CLI + JSON report |
 | `tests/` | Unit + train + harness (pytest, seconds on CPU) |
-| `ci/` + `.github/workflows/` | Mirrored GitHub Actions CI |
+| `ci/github-actions.yml` | GitHub Actions workflow (copy to `.github/workflows/ci.yml` to enable CI) |
 
 ## Quickstart
 
@@ -45,7 +45,7 @@ Example output:
 ```text
 Tiny LoRA before/after eval
   LoRA rank=4  alpha=8.0
-  trainable=144  frozen=608
+  trainable=140  frozen=643
   before  loss=1.10xx  acc=0.3x
   after   loss=0.2xxx  acc=0.9x
   delta   loss=-0.8xxx  acc=+0.5x
@@ -83,6 +83,11 @@ CI fails if after accuracy regresses vs before on this toy task.
 - **Synthetic blobs** — sklearn-sized multi-class Gaussians; zero network I/O
 - **Explicit adapters** — learning the low-rank update, not wrapping a 7B checkpoint
 - **Not production** — no distributed training, no checkpoint formats, no HF Hub push
+
+
+## CI
+
+The workflow YAML lives at [`ci/github-actions.yml`](ci/github-actions.yml) (mirrored for OSS demos). To enable GitHub Actions on this repo, copy it to `.github/workflows/ci.yml` (requires a token with the `workflow` scope). Pytest + eval CLI are the gate.
 
 ## License
 

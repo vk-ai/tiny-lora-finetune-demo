@@ -9,7 +9,7 @@ import numpy as np
 
 from .data import Dataset, train_test_split
 from .model import TinyClassifier
-from .train import build_and_train, train_lora
+from .train import train_lora
 
 
 @dataclass
@@ -112,12 +112,10 @@ def format_report(report: BeforeAfterReport) -> str:
     return "\n".join(lines)
 
 
-# re-export for callers that build via config
 __all__ = [
     "Metrics",
     "BeforeAfterReport",
     "evaluate",
     "run_before_after",
     "format_report",
-    "build_and_train",
 ]
