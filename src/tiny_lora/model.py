@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .lora import LoRALinear
+from .lora import LoRALinear, ScaleMode
 
 
 def _relu(x: np.ndarray) -> np.ndarray:
@@ -36,6 +36,8 @@ class TinyClassifier:
         rank: int,
         alpha: float,
         rng: np.random.Generator,
+        *,
+        scale_mode: ScaleMode = "classic",
     ) -> "TinyClassifier":
         W1 = rng.normal(0.0, 0.5 / np.sqrt(in_features), size=(hidden_dim, in_features))
         b1 = np.zeros(hidden_dim, dtype=np.float64)
@@ -46,6 +48,7 @@ class TinyClassifier:
             alpha=alpha,
             rng=rng,
             scale=0.5,
+            scale_mode=scale_mode,
         )
         return cls(W1=W1.astype(np.float64), b1=b1, head=head)
 

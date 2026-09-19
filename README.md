@@ -18,11 +18,11 @@ This repo is that slice.
 
 | Piece | Role |
 |---|---|
-| `src/tiny_lora/lora.py` | Toy `LoRALinear`: `y = Wx + (α/r) BAx + b` |
+| `src/tiny_lora/lora.py` | Toy `LoRALinear`: classic `α/r` or rsLoRA `α/√r` |
 | `src/tiny_lora/model.py` | Tiny frozen MLP + LoRA classification head |
 | `src/tiny_lora/train.py` | SGD over `A`/`B` only |
 | `src/tiny_lora/eval.py` | Before/after loss + accuracy harness |
-| `configs/default.yaml` | LoRA `rank` / `alpha`, data & train knobs |
+| `configs/default.yaml` | LoRA `rank` / `alpha` / `scaling: classic\|rslora` |
 | `evals/runner.py` | CI-friendly eval CLI + JSON report |
 | `tests/` | Unit + train + harness (pytest, seconds on CPU) |
 | `ci/github-actions.yml` | GitHub Actions workflow (copy to `.github/workflows/ci.yml` to enable CI) |
@@ -56,13 +56,17 @@ Tiny LoRA before/after eval
 For frozen `W ∈ R^{out×in}` and adapters `A ∈ R^{r×in}`, `B ∈ R^{out×r}`:
 
 ```text
-ΔW = (α / r) · B @ A
+classic:  scale = α / r
+rslora:   scale = α / √r     # Rank-Stabilized LoRA (teaching stub, not peft)
+ΔW = scale · B @ A
 y  = x @ Wᵀ + x @ ΔWᵀ + b
 ```
 
 - `A` ~ N(0, 1/√in), `B = 0` → adapter starts as a **no-op**
 - Only `A` and `B` receive gradients; base `W` / hidden layer stay frozen
-- Config: `configs/default.yaml` → `lora.rank`, `lora.alpha`
+- Config: `configs/default.yaml` → `lora.rank`, `lora.alpha`, `lora.scaling`
+- Eval JSON records `scale_mode` (+ `scaling_value`). Optional: `python evals/runner.py --sweep`
+- **Not** Hugging Face `peft` / transformers — numpy toy only.
 
 ## Eval harness
 
