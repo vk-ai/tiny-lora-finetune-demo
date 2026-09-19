@@ -40,3 +40,20 @@ def test_trainable_count():
     # A: 4*16, B: 8*4
     assert layer.n_trainable() == 4 * 16 + 8 * 4
     assert layer.n_frozen() == 8 * 16 + 8
+
+
+def test_rslora_scaling_alpha_over_sqrt_rank():
+    from tiny_lora.lora import lora_scale
+
+    rng = np.random.default_rng(2)
+    layer = LoRALinear.create(4, 2, rank=4, alpha=8.0, rng=rng, scale_mode="rslora")
+    assert layer.scaling == pytest.approx(8.0 / 2.0)  # sqrt(4)=2
+    assert lora_scale(8.0, 4, "classic") == pytest.approx(2.0)
+    assert lora_scale(8.0, 4, "rslora") == pytest.approx(4.0)
+
+
+def test_classic_vs_rslora_scale_differ_for_rank():
+    from tiny_lora.lora import lora_scale
+
+    # For rank=16, classic=alpha/16, rslora=alpha/4 — clearly different
+    assert lora_scale(8.0, 16, "classic") != pytest.approx(lora_scale(8.0, 16, "rslora"))

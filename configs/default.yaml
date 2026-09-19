@@ -15,7 +15,9 @@ model:
 lora:
   rank: 4
   alpha: 8.0
-  # Effective scale = alpha / rank (standard LoRA)
+  # classic = alpha / rank ; rslora = alpha / sqrt(rank)
+  scaling: classic
+  # Optional eval sweep (evals/runner.py --sweep): ranks: [2, 4, 8]
 
 train:
   epochs: 50

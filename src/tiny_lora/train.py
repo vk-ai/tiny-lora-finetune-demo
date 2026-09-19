@@ -86,6 +86,7 @@ def build_and_train(cfg: dict[str, Any], train: Dataset) -> tuple[TinyClassifier
         rank=int(cfg["lora"]["rank"]),
         alpha=float(cfg["lora"]["alpha"]),
         rng=rng,
+        scale_mode=cfg["lora"].get("scaling", "classic"),
     )
     losses = train_lora(
         model,
