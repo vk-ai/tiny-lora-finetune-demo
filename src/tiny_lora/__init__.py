@@ -2,12 +2,13 @@
 
 from .config import load_config
 from .eval import evaluate, run_before_after
-from .lora import LoRALinear
+from .lora import LoRALinear, MergedLinear
 from .model import TinyClassifier
 from .train import train_lora
 
 __all__ = [
     "LoRALinear",
+    "MergedLinear",
     "TinyClassifier",
     "load_config",
     "evaluate",

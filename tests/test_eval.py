@@ -71,3 +71,21 @@ def test_rank_sweep_runner():
     for row in payload["rows"]:
         assert row["scale_mode"] == "classic"
         assert row["after_accuracy"] >= row["before_accuracy"]
+
+
+def test_before_after_includes_merged_parity():
+    cfg = load_config(ROOT / "configs" / "default.yaml")
+    cfg = {
+        **cfg,
+        "data": {**cfg["data"], "n_train": 64, "n_test": 32},
+        "train": {**cfg["train"], "epochs": 15},
+        "eval": {"merge_and_unload": True},
+    }
+    report = run_before_after(cfg)
+    d = report.to_dict()
+    assert d["mode"] == "merged"
+    assert "merged" in d
+    assert d["adapter_vs_merged_max_abs_logit"] is not None
+    assert d["adapter_vs_merged_max_abs_logit"] < 1e-8
+    assert report.merged is not None
+    assert abs(report.merged.accuracy - report.after.accuracy) < 1e-12

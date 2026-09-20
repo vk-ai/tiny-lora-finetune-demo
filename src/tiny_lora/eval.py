@@ -1,4 +1,4 @@
-"""Eval harness: loss + accuracy before vs after LoRA fine-tune."""
+"""Eval harness: loss + accuracy before vs after LoRA fine-tune (+ optional merge)."""
 
 from __future__ import annotations
 
@@ -31,9 +31,12 @@ class BeforeAfterReport:
     scale_mode: str
     scaling_value: float
     final_train_loss: float
+    mode: str = "adapter"
+    merged: Metrics | None = None
+    adapter_vs_merged_max_abs_logit: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "before": asdict(self.before),
             "after": asdict(self.after),
             "trainable_params": self.trainable_params,
@@ -43,9 +46,15 @@ class BeforeAfterReport:
             "scale_mode": self.scale_mode,
             "scaling_value": self.scaling_value,
             "final_train_loss": self.final_train_loss,
+            "mode": self.mode,
             "accuracy_delta": self.after.accuracy - self.before.accuracy,
             "loss_delta": self.after.loss - self.before.loss,
         }
+        if self.merged is not None:
+            d["merged"] = asdict(self.merged)
+        if self.adapter_vs_merged_max_abs_logit is not None:
+            d["adapter_vs_merged_max_abs_logit"] = self.adapter_vs_merged_max_abs_logit
+        return d
 
 
 def _cross_entropy(logits: np.ndarray, y: np.ndarray) -> float:
@@ -63,7 +72,12 @@ def evaluate(model: TinyClassifier, data: Dataset) -> Metrics:
 
 
 def run_before_after(cfg: dict[str, Any]) -> BeforeAfterReport:
-    """Full harness: build model, score test, train LoRA, score test again."""
+    """Full harness: build model, score test, train LoRA, score test again.
+
+    When ``cfg["eval"]["merge_and_unload"]`` is true (default), also merges the
+    adapter into base weights and records ``mode: merged`` metrics that must
+    match adapter logits within atol (teaching check).
+    """
     train, test = train_test_split(
         n_train=int(cfg["data"]["n_train"]),
         n_test=int(cfg["data"]["n_test"]),
@@ -96,6 +110,20 @@ def run_before_after(cfg: dict[str, Any]) -> BeforeAfterReport:
         seed=int(cfg["seed"]) + 1,
     )
     after = evaluate(model, test)
+
+    do_merge = bool(cfg.get("eval", {}).get("merge_and_unload", True))
+    merged_metrics: Metrics | None = None
+    max_abs: float | None = None
+    mode = "adapter"
+    if do_merge:
+        adapter_logits = model.logits(test.X)
+        # Assign-return lesson: must keep the returned standalone model.
+        merged_model = model.merge_and_unload()
+        mode = merged_model.mode
+        merged_metrics = evaluate(merged_model, test)
+        merged_logits = merged_model.logits(test.X)
+        max_abs = float(np.max(np.abs(adapter_logits - merged_logits)))
+
     return BeforeAfterReport(
         before=before,
         after=after,
@@ -106,6 +134,9 @@ def run_before_after(cfg: dict[str, Any]) -> BeforeAfterReport:
         scale_mode=scale_mode,
         scaling_value=lora_scale(alpha, rank, scale_mode),
         final_train_loss=losses[-1] if losses else float("nan"),
+        mode=mode,
+        merged=merged_metrics,
+        adapter_vs_merged_max_abs_logit=max_abs,
     )
 
 
@@ -115,12 +146,17 @@ def format_report(report: BeforeAfterReport) -> str:
         "Tiny LoRA before/after eval",
         f"  LoRA rank={report.lora_rank}  alpha={report.lora_alpha}  "
         f"scale_mode={report.scale_mode}  scale={report.scaling_value:.4f}",
-        f"  trainable={report.trainable_params}  frozen={report.frozen_params}",
+        f"  trainable={report.trainable_params}  frozen={report.frozen_params}  mode={report.mode}",
         f"  before  loss={report.before.loss:.4f}  acc={report.before.accuracy:.4f}",
         f"  after   loss={report.after.loss:.4f}  acc={report.after.accuracy:.4f}",
         f"  delta   loss={d['loss_delta']:+.4f}  acc={d['accuracy_delta']:+.4f}",
         f"  final train loss={report.final_train_loss:.4f}",
     ]
+    if report.merged is not None:
+        lines.append(
+            f"  merged  loss={report.merged.loss:.4f}  acc={report.merged.accuracy:.4f}  "
+            f"(max|Δlogit|={report.adapter_vs_merged_max_abs_logit:.2e})"
+        )
     return "\n".join(lines)
 
 

@@ -108,6 +108,11 @@ def main(argv: list[str] | None = None) -> int:
     if report.after.loss > report.before.loss + 1e-6:
         print("FAIL: after loss worse than before", file=sys.stderr)
         return 1
+    if payload.get("mode") == "merged":
+        max_abs = payload.get("adapter_vs_merged_max_abs_logit")
+        if max_abs is None or max_abs > 1e-6:
+            print(f"FAIL: adapter vs merged logits diverge ({max_abs})", file=sys.stderr)
+            return 1
     return 0
 
 

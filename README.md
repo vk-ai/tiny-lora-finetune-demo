@@ -18,7 +18,7 @@ This repo is that slice.
 
 | Piece | Role |
 |---|---|
-| `src/tiny_lora/lora.py` | Toy `LoRALinear`: classic `α/r` or rsLoRA `α/√r` |
+| `src/tiny_lora/lora.py` | Toy `LoRALinear` + `merge_and_unload()` → `MergedLinear` (classic `α/r` or rsLoRA `α/√r`) |
 | `src/tiny_lora/model.py` | Tiny frozen MLP + LoRA classification head |
 | `src/tiny_lora/train.py` | SGD over `A`/`B` only |
 | `src/tiny_lora/eval.py` | Before/after loss + accuracy harness |
@@ -66,14 +66,16 @@ y  = x @ Wᵀ + x @ ΔWᵀ + b
 - Only `A` and `B` receive gradients; base `W` / hidden layer stay frozen
 - Config: `configs/default.yaml` → `lora.rank`, `lora.alpha`, `lora.scaling`
 - Eval JSON records `scale_mode` (+ `scaling_value`). Optional: `python evals/runner.py --sweep`
+- **`merge_and_unload()`** folds `W ← W + scale·(B@A)` and returns a plain `MergedLinear` / classifier (**must assign** the return value — same footgun as [peft#2032](https://github.com/huggingface/peft/issues/2032)). Eval JSON adds `mode: adapter|merged` and `adapter_vs_merged_max_abs_logit`.
 - **Not** Hugging Face `peft` / transformers — numpy toy only.
 
 ## Eval harness
 
-`run_before_after(cfg)` builds the model, scores the held-out synthetic set, trains LoRA, scores again:
+`run_before_after(cfg)` builds the model, scores the held-out synthetic set, trains LoRA, scores again, then (by default) **merges** the adapter and re-scores:
 
 1. **loss** — mean cross-entropy (before vs after)
 2. **accuracy** — argmax vs labels (before vs after)
+3. **merged parity** — `model = model.merge_and_unload()`; adapter vs merged logits within atol; report `mode: merged`
 
 ```bash
 pytest tests/test_eval.py tests/test_train.py -q
