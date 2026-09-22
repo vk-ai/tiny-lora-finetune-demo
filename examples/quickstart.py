@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quickstart: train tiny LoRA and print before/after metrics."""
+"""Quickstart: train tiny LoRA, print before/after, then merge_and_unload."""
 
 from __future__ import annotations
 
@@ -23,6 +23,17 @@ def main() -> None:
         f"{report.trainable_params}/{report.trainable_params + report.frozen_params} "
         f"params trainable"
     )
+    print()
+    print(
+        "merge_and_unload lesson: always assign the return value "
+        "(model = model.merge_and_unload()) — same footgun as peft#2032. "
+        "This demo is numpy-only; not Hugging Face peft."
+    )
+    if report.adapter_vs_merged_max_abs_logit is not None:
+        print(
+            f"adapter vs merged max|Δlogit| = "
+            f"{report.adapter_vs_merged_max_abs_logit:.2e}  mode={report.mode}"
+        )
 
 
 if __name__ == "__main__":

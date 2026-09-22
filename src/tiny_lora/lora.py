@@ -11,6 +11,10 @@ where A is (rank x in_features), B is (out_features x rank).
 A ~ N(0, 1/sqrt(in)), B = 0 so the adapter starts as a no-op.
 Only A and B are trainable; W and b stay frozen.
 
+merge_and_unload folds ΔW into W and returns a plain MergedLinear
+(standalone inference weights). Like PEFT, the return value must be
+assigned — this method does not mutate in place (see peft#2032 lesson).
+
 This is a teaching stub — not Hugging Face peft / transformers.
 """
 
@@ -36,6 +40,29 @@ def lora_scale(alpha: float, rank: int, mode: ScaleMode = "classic") -> float:
     if mode == "rslora":
         return alpha / math.sqrt(rank)
     raise ValueError(f"unknown scaling mode: {mode!r} (expected classic|rslora)")
+
+
+@dataclass
+class MergedLinear:
+    """Plain linear layer after LoRA merge_and_unload (no A/B adapters)."""
+
+    in_features: int
+    out_features: int
+    W: np.ndarray  # (out, in) — includes folded ΔW
+    b: np.ndarray  # (out,)
+    merged_from: ScaleMode | None = None
+    merged_rank: int | None = None
+    merged_alpha: float | None = None
+
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        """x: (batch, in) -> (batch, out)."""
+        return x @ self.W.T + self.b
+
+    def n_trainable(self) -> int:
+        return 0
+
+    def n_frozen(self) -> int:
+        return int(self.W.size + self.b.size)
 
 
 @dataclass
@@ -103,6 +130,29 @@ class LoRALinear:
         # x @ A.T -> (batch, rank); then @ B.T -> (batch, out)
         lora = self.scaling * ((x @ self.A.T) @ self.B.T)
         return base + lora
+
+    def merge_and_unload(self) -> MergedLinear:
+        """Fold ΔW into W and return a standalone MergedLinear (drop A/B).
+
+        **Must assign the return value** — this does *not* mutate ``self`` in place
+        (same footgun as Hugging Face PEFT ``merge_and_unload``; see peft#2032).
+
+            layer = layer.merge_and_unload()   # correct
+            layer.merge_and_unload()           # wrong: original A/B still used
+
+        Uses classic ``α/r`` or rsLoRA ``α/√r`` via :meth:`scaling`.
+        Numpy teaching stub — not peft/transformers.
+        """
+        W_merged = self.W + self.delta_W()
+        return MergedLinear(
+            in_features=self.in_features,
+            out_features=self.out_features,
+            W=np.asarray(W_merged, dtype=np.float64).copy(),
+            b=np.asarray(self.b, dtype=np.float64).copy(),
+            merged_from=self.scale_mode,
+            merged_rank=self.rank,
+            merged_alpha=self.alpha,
+        )
 
     def trainable_params(self) -> tuple[np.ndarray, np.ndarray]:
         return self.A, self.B

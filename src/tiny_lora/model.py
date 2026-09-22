@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .lora import LoRALinear, ScaleMode
+from .lora import LoRALinear, MergedLinear, ScaleMode
 
 
 def _relu(x: np.ndarray) -> np.ndarray:
@@ -21,11 +21,11 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
 
 @dataclass
 class TinyClassifier:
-    """Frozen hidden layer + LoRA classification head."""
+    """Frozen hidden layer + LoRA (or merged) classification head."""
 
     W1: np.ndarray  # (hidden, in) frozen
     b1: np.ndarray  # (hidden,) frozen
-    head: LoRALinear
+    head: LoRALinear | MergedLinear
 
     @classmethod
     def create(
@@ -63,6 +63,30 @@ class TinyClassifier:
 
     def predict(self, x: np.ndarray) -> np.ndarray:
         return self.logits(x).argmax(axis=1)
+
+    def merge_and_unload(self) -> "TinyClassifier":
+        """Return a new classifier with LoRA folded into the head weights.
+
+        **Must assign:** ``model = model.merge_and_unload()`` — does not mutate
+        this instance (PEFT assign-return lesson / peft#2032). Only valid while
+        ``head`` is still a :class:`LoRALinear`.
+        """
+        if not isinstance(self.head, LoRALinear):
+            raise TypeError(
+                "merge_and_unload requires a LoRALinear head "
+                f"(got {type(self.head).__name__}; already merged?)"
+            )
+        merged_head = self.head.merge_and_unload()
+        return TinyClassifier(
+            W1=np.asarray(self.W1, dtype=np.float64).copy(),
+            b1=np.asarray(self.b1, dtype=np.float64).copy(),
+            head=merged_head,
+        )
+
+    @property
+    def mode(self) -> str:
+        """``adapter`` while LoRA A/B exist; ``merged`` after merge_and_unload."""
+        return "merged" if isinstance(self.head, MergedLinear) else "adapter"
 
     def n_trainable(self) -> int:
         return self.head.n_trainable()

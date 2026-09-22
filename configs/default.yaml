@@ -27,3 +27,5 @@ train:
 
 eval:
   report_before_after: true
+  # Fold LoRA into W and score merged vs adapter (assign-return / peft#2032 lesson)
+  merge_and_unload: true
