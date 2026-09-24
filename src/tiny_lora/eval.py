@@ -34,6 +34,7 @@ class BeforeAfterReport:
     mode: str = "adapter"
     merged: Metrics | None = None
     adapter_vs_merged_max_abs_logit: float | None = None
+    adapter_kind: str = "lora"
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -47,6 +48,7 @@ class BeforeAfterReport:
             "scaling_value": self.scaling_value,
             "final_train_loss": self.final_train_loss,
             "mode": self.mode,
+            "adapter_kind": self.adapter_kind,
             "accuracy_delta": self.after.accuracy - self.before.accuracy,
             "loss_delta": self.after.loss - self.before.loss,
         }
@@ -90,6 +92,8 @@ def run_before_after(cfg: dict[str, Any]) -> BeforeAfterReport:
     rank = int(cfg["lora"]["rank"])
     alpha = float(cfg["lora"]["alpha"])
     rng = np.random.default_rng(int(cfg["seed"]))
+    use_dora = bool(cfg["lora"].get("use_dora", False))
+    qlora = bool(cfg["lora"].get("qlora", False))
     model = TinyClassifier.create(
         in_features=int(cfg["data"]["n_features"]),
         hidden_dim=int(cfg["model"]["hidden_dim"]),
@@ -98,6 +102,8 @@ def run_before_after(cfg: dict[str, Any]) -> BeforeAfterReport:
         alpha=alpha,
         rng=rng,
         scale_mode=scale_mode,
+        use_dora=use_dora,
+        qlora_fake4bit=qlora,
     )
     before = evaluate(model, test)
     losses = train_lora(
@@ -137,6 +143,7 @@ def run_before_after(cfg: dict[str, Any]) -> BeforeAfterReport:
         mode=mode,
         merged=merged_metrics,
         adapter_vs_merged_max_abs_logit=max_abs,
+        adapter_kind=model.adapter_kind,
     )
 
 
@@ -146,7 +153,7 @@ def format_report(report: BeforeAfterReport) -> str:
         "Tiny LoRA before/after eval",
         f"  LoRA rank={report.lora_rank}  alpha={report.lora_alpha}  "
         f"scale_mode={report.scale_mode}  scale={report.scaling_value:.4f}",
-        f"  trainable={report.trainable_params}  frozen={report.frozen_params}  mode={report.mode}",
+        f"  kind={report.adapter_kind}  trainable={report.trainable_params}  frozen={report.frozen_params}  mode={report.mode}",
         f"  before  loss={report.before.loss:.4f}  acc={report.before.accuracy:.4f}",
         f"  after   loss={report.after.loss:.4f}  acc={report.after.accuracy:.4f}",
         f"  delta   loss={d['loss_delta']:+.4f}  acc={d['accuracy_delta']:+.4f}",
@@ -160,10 +167,63 @@ def format_report(report: BeforeAfterReport) -> str:
     return "\n".join(lines)
 
 
+
+
+def compare_adapters(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Side-by-side LoRA / DoRA / optional fake-QLoRA teaching table.
+
+    Decision axes (community): start LoRA → QLoRA if memory-bound → DoRA if
+    quality-bound at low rank. peft maps: LoraConfig / use_dora=True / bitsandbytes.
+    """
+    from .config import load_config
+    from .qlora import qlora_available, qlora_skip_message
+
+    base = dict(cfg or load_config())
+    rows: list[dict[str, Any]] = []
+    variants = [
+        ("lora", {"use_dora": False, "qlora": False}),
+        ("dora", {"use_dora": True, "qlora": False}),
+        ("qlora_fake4bit", {"use_dora": False, "qlora": True}),
+    ]
+    for name, flags in variants:
+        c = {**base, "lora": {**base["lora"], **flags}}
+        # Keep runs fast for comparison
+        c["train"] = {**c["train"], "epochs": min(int(c["train"]["epochs"]), 30)}
+        report = run_before_after(c)
+        row = {
+            "variant": name,
+            "trainable_params": report.trainable_params,
+            "train_loss": report.final_train_loss,
+            "test_acc": report.after.accuracy,
+            "test_loss": report.after.loss,
+            "adapter_kind": report.adapter_kind,
+            "bnb_available": qlora_available(),
+        }
+        if name.startswith("qlora") and not qlora_available():
+            row["note"] = qlora_skip_message()
+        rows.append(row)
+    return rows
+
+
+def format_comparison(rows: list[dict[str, Any]]) -> str:
+    lines = [
+        "LoRA / DoRA / QLoRA-fake comparison (toy)",
+        f"{'variant':<16} {'trainable':>10} {'train_loss':>12} {'test_acc':>10}",
+    ]
+    for r in rows:
+        lines.append(
+            f"{r['variant']:<16} {r['trainable_params']:>10d} "
+            f"{r['train_loss']:>12.4f} {r['test_acc']:>10.4f}"
+        )
+    return "\n".join(lines)
+
+
 __all__ = [
     "Metrics",
     "BeforeAfterReport",
     "evaluate",
     "run_before_after",
     "format_report",
+    "compare_adapters",
+    "format_comparison",
 ]

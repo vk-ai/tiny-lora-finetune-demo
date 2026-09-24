@@ -18,6 +18,10 @@ lora:
   # classic = alpha / rank ; rslora = alpha / sqrt(rank)
   scaling: classic
   # Optional eval sweep (evals/runner.py --sweep): ranks: [2, 4, 8]
+  # DoRA: magnitude vector + normalized direction (peft use_dora=True analogue)
+  use_dora: false
+  # Optional QLoRA *concept*: fake-4bit frozen base (bnb skipped if absent)
+  qlora: false
 
 train:
   epochs: 50
