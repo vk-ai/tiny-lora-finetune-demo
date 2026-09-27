@@ -1,4 +1,4 @@
-"""SGD train loop over LoRA adapters only (base weights frozen)."""
+"""SGD train loop over LoRA / DoRA adapters only (base weights frozen)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 
 from .data import Dataset
+from .dora import DoRALinear
+from .lora import LoRALinear
 from .model import TinyClassifier
 
 
@@ -22,6 +24,71 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
     return e / (e.sum(axis=1, keepdims=True) + 1e-12)
 
 
+def _train_lora_step(head: LoRALinear, h: np.ndarray, yb: np.ndarray, lr: float, l2: float) -> float:
+    logits = head.forward(h)
+    probs = _softmax(logits)
+    loss = _cross_entropy(logits, yb)
+    dlogits = probs.copy()
+    dlogits[np.arange(len(yb)), yb] -= 1.0
+    dlogits /= max(len(yb), 1)
+    scale = head.scaling
+    hA = h @ head.A.T
+    dB = scale * (dlogits.T @ hA)
+    dA = scale * (head.B.T @ dlogits.T @ h)
+    if l2 > 0:
+        dA = dA + l2 * head.A
+        dB = dB + l2 * head.B
+    head.A -= lr * dA
+    head.B -= lr * dB
+    return loss
+
+
+def _train_dora_step(head: DoRALinear, h: np.ndarray, yb: np.ndarray, lr: float, l2: float) -> float:
+    """DoRA step via finite-diff-free analytic grads on effective W path.
+
+    We backprop through y = h @ (m * direction).T where direction = (W+ΔW)/||.||.
+    For the toy we treat direction as locally constant w.r.t. A/B for a stable
+    teaching update (magnitude + LoRA direction), then refresh — same spirit as
+    peft's detached norm in early DoRA implementations.
+    """
+    direction, _row_norm = head.direction_and_norm()
+    # Detach direction for A/B update; m gets exact grad through effective W
+    W_eff = head.m[:, None] * direction
+    logits = h @ W_eff.T + head.b
+    probs = _softmax(logits)
+    loss = _cross_entropy(logits, yb)
+
+    dlogits = probs.copy()
+    dlogits[np.arange(len(yb)), yb] -= 1.0
+    dlogits /= max(len(yb), 1)
+
+    # dW_eff = dlogits.T @ h
+    dW_eff = dlogits.T @ h  # (out, in)
+    # m grad: sum over in of dW_eff * direction
+    dm = np.sum(dW_eff * direction, axis=1)
+    # Direction path for A/B (detached norm): d(direction≈W+ΔW) ≈ dW_eff * m / norm
+    # Use: dΔW ≈ dW_eff * (m / row_norm) with detached row_norm from forward
+    scale = head.scaling
+    _, row_norm = head.direction_and_norm()
+    dW_prime = dW_eff * (head.m / row_norm)[:, None]
+    hA = h @ head.A.T
+    # ΔW = scale * B @ A; same structure as LoRA but gradient from dW_prime
+    # dB: for each sample contribution via chain — use weight-space grads:
+    # dΔW = scale * (dB @ A + B @ dA) → dB = scale * dΔW @ A.T, dA = scale * B.T @ dΔW
+    dB = scale * (dW_prime @ head.A.T)
+    dA = scale * (head.B.T @ dW_prime)
+
+    if l2 > 0:
+        dA = dA + l2 * head.A
+        dB = dB + l2 * head.B
+        dm = dm + l2 * head.m
+
+    head.A -= lr * dA
+    head.B -= lr * dB
+    head.m -= lr * dm
+    return loss
+
+
 def train_lora(
     model: TinyClassifier,
     train: Dataset,
@@ -32,7 +99,7 @@ def train_lora(
     l2: float = 0.0,
     seed: int = 0,
 ) -> list[float]:
-    """Train only LoRA A/B on the classification head. Returns epoch losses."""
+    """Train only adapter params on the classification head. Returns epoch losses."""
     rng = np.random.default_rng(seed)
     n = len(train)
     losses: list[float] = []
@@ -46,32 +113,15 @@ def train_lora(
             idx = order[start : start + batch_size]
             xb = train.X[idx]
             yb = train.y[idx]
-
-            h = model.hidden(xb)  # (B, hidden) — frozen path
-            logits = head.forward(h)
-            probs = _softmax(logits)
-            loss = _cross_entropy(logits, yb)
+            h = model.hidden(xb)
+            if isinstance(head, DoRALinear):
+                loss = _train_dora_step(head, h, yb, lr, l2)
+            elif isinstance(head, LoRALinear):
+                loss = _train_lora_step(head, h, yb, lr, l2)
+            else:
+                raise TypeError(f"cannot train merged head ({type(head).__name__})")
             epoch_loss += loss
             n_batches += 1
-
-            # dL/dlogits (copy — do not mutate probs in place)
-            dlogits = probs.copy()
-            dlogits[np.arange(len(yb)), yb] -= 1.0
-            dlogits /= max(len(yb), 1)
-
-            # logits = base + scale * (h @ A.T @ B.T)
-            scale = head.scaling
-            hA = h @ head.A.T  # (B, rank)
-            dB = scale * (dlogits.T @ hA)  # (out, rank)
-            dA = scale * (head.B.T @ dlogits.T @ h)  # (rank, in)
-
-            if l2 > 0:
-                dA = dA + l2 * head.A
-                dB = dB + l2 * head.B
-
-            head.A -= lr * dA
-            head.B -= lr * dB
-
         losses.append(epoch_loss / max(n_batches, 1))
 
     return losses
@@ -79,14 +129,17 @@ def train_lora(
 
 def build_and_train(cfg: dict[str, Any], train: Dataset) -> tuple[TinyClassifier, list[float]]:
     rng = np.random.default_rng(int(cfg["seed"]))
+    lora_cfg = cfg["lora"]
     model = TinyClassifier.create(
         in_features=int(cfg["data"]["n_features"]),
         hidden_dim=int(cfg["model"]["hidden_dim"]),
         n_classes=int(cfg["data"]["n_classes"]),
-        rank=int(cfg["lora"]["rank"]),
-        alpha=float(cfg["lora"]["alpha"]),
+        rank=int(lora_cfg["rank"]),
+        alpha=float(lora_cfg["alpha"]),
         rng=rng,
-        scale_mode=cfg["lora"].get("scaling", "classic"),
+        scale_mode=lora_cfg.get("scaling", "classic"),
+        use_dora=bool(lora_cfg.get("use_dora", False)),
+        qlora_fake4bit=bool(lora_cfg.get("qlora", False)),
     )
     losses = train_lora(
         model,

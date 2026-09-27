@@ -36,6 +36,8 @@ def _validate(cfg: dict[str, Any]) -> None:
             f"lora.scaling must be one of {sorted(_VALID_SCALING)}, got {scaling!r}"
         )
     lora["scaling"] = scaling
+    lora["use_dora"] = bool(lora.get("use_dora", False))
+    lora["qlora"] = bool(lora.get("qlora", False))
     ranks = lora.get("ranks")
     if ranks is not None:
         if not isinstance(ranks, list) or not ranks:

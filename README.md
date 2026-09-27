@@ -19,6 +19,8 @@ This repo is that slice.
 | Piece | Role |
 |---|---|
 | `src/tiny_lora/lora.py` | Toy `LoRALinear` + `merge_and_unload()` → `MergedLinear` (classic `α/r` or rsLoRA `α/√r`) |
+| `src/tiny_lora/dora.py` | DoRA stub: magnitude vector `m` + normalized direction (peft `use_dora=True` analogue) |
+| `src/tiny_lora/qlora.py` | Optional QLoRA *concept* (bitsandbytes import-guarded; numpy fake-4bit always offline-safe) |
 | `src/tiny_lora/model.py` | Tiny frozen MLP + LoRA classification head |
 | `src/tiny_lora/train.py` | SGD over `A`/`B` only |
 | `src/tiny_lora/eval.py` | Before/after loss + accuracy harness |
@@ -68,6 +70,29 @@ y  = x @ Wᵀ + x @ ΔWᵀ + b
 - Eval JSON records `scale_mode` (+ `scaling_value`). Optional: `python evals/runner.py --sweep`
 - **`merge_and_unload()`** folds `W ← W + scale·(B@A)` and returns a plain `MergedLinear` / classifier (**must assign** the return value — same footgun as [peft#2032](https://github.com/huggingface/peft/issues/2032)). Eval JSON adds `mode: adapter|merged` and `adapter_vs_merged_max_abs_logit`.
 - **Not** Hugging Face `peft` / transformers — numpy toy only.
+
+
+## DoRA + optional QLoRA (round 3)
+
+**DoRA** (weight-decomposed LoRA) keeps a learnable **magnitude** vector `m` and applies LoRA on the **normalized direction** of `W+ΔW`:
+
+```text
+W′ = m · (W + scale·B@A) / ||W + scale·B@A||_row
+```
+
+Config: `lora.use_dora: true` (or peft production one-liner `LoraConfig(use_dora=True)` — **not** used here; numpy toy only).
+
+**QLoRA concept:** `lora.qlora: true` fake-quantizes the frozen base to 4-bit-shaped storage for the memory story. Real `bitsandbytes` is **optional** — if absent, CI still runs the numpy fake path and `qlora_available()` is False.
+
+```python
+from tiny_lora import compare_adapters, format_comparison  # format via eval
+from tiny_lora.eval import compare_adapters, format_comparison
+rows = compare_adapters()  # LoRA vs DoRA vs fake-QLoRA table
+print(format_comparison(rows))
+```
+
+Community decision axes: start LoRA → QLoRA if memory-bound → DoRA if quality-bound at low rank  
+([data-dynamics explainer](https://www.data-dynamics.io/en/blog/lora-qlora-dora), [peft DoRA](https://huggingface.co/docs/peft/main/en/package_reference/lora_variant_dora)).
 
 ## Eval harness
 

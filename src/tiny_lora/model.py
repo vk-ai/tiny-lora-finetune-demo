@@ -1,4 +1,4 @@
-"""Tiny two-layer classifier: Linear -> ReLU -> LoRALinear (classifier head)."""
+"""Tiny two-layer classifier: Linear -> ReLU -> LoRA/DoRALinear (classifier head)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .dora import DoRALinear
 from .lora import LoRALinear, MergedLinear, ScaleMode
 
 
@@ -21,11 +22,12 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
 
 @dataclass
 class TinyClassifier:
-    """Frozen hidden layer + LoRA (or merged) classification head."""
+    """Frozen hidden layer + LoRA / DoRA (or merged) classification head."""
 
     W1: np.ndarray  # (hidden, in) frozen
     b1: np.ndarray  # (hidden,) frozen
-    head: LoRALinear | MergedLinear
+    head: LoRALinear | DoRALinear | MergedLinear
+    adapter_kind: str = "lora"  # lora | dora | merged
 
     @classmethod
     def create(
@@ -38,10 +40,13 @@ class TinyClassifier:
         rng: np.random.Generator,
         *,
         scale_mode: ScaleMode = "classic",
+        use_dora: bool = False,
+        qlora_fake4bit: bool = False,
     ) -> "TinyClassifier":
         W1 = rng.normal(0.0, 0.5 / np.sqrt(in_features), size=(hidden_dim, in_features))
         b1 = np.zeros(hidden_dim, dtype=np.float64)
-        head = LoRALinear.create(
+        head_cls = DoRALinear if use_dora else LoRALinear
+        head = head_cls.create(
             in_features=hidden_dim,
             out_features=n_classes,
             rank=rank,
@@ -50,7 +55,21 @@ class TinyClassifier:
             scale=0.5,
             scale_mode=scale_mode,
         )
-        return cls(W1=W1.astype(np.float64), b1=b1, head=head)
+        if qlora_fake4bit:
+            from .qlora import apply_fake4bit_to_base
+
+            head.W, _ = apply_fake4bit_to_base(head.W)
+            if use_dora and isinstance(head, DoRALinear):
+                # Re-init magnitude to match quantized base
+                row_norm = np.linalg.norm(head.W, axis=1)
+                head.m = np.maximum(row_norm, 1e-12)
+        kind = "dora" if use_dora else "lora"
+        return cls(
+            W1=W1.astype(np.float64),
+            b1=b1,
+            head=head,
+            adapter_kind=kind,
+        )
 
     def hidden(self, x: np.ndarray) -> np.ndarray:
         return _relu(x @ self.W1.T + self.b1)
@@ -65,27 +84,29 @@ class TinyClassifier:
         return self.logits(x).argmax(axis=1)
 
     def merge_and_unload(self) -> "TinyClassifier":
-        """Return a new classifier with LoRA folded into the head weights.
+        """Return a new classifier with adapter folded into the head weights.
 
         **Must assign:** ``model = model.merge_and_unload()`` — does not mutate
-        this instance (PEFT assign-return lesson / peft#2032). Only valid while
-        ``head`` is still a :class:`LoRALinear`.
+        this instance (PEFT assign-return lesson / peft#2032).
         """
-        if not isinstance(self.head, LoRALinear):
+        if isinstance(self.head, MergedLinear):
+            raise TypeError("merge_and_unload: head already merged")
+        if not isinstance(self.head, (LoRALinear, DoRALinear)):
             raise TypeError(
-                "merge_and_unload requires a LoRALinear head "
-                f"(got {type(self.head).__name__}; already merged?)"
+                "merge_and_unload requires LoRALinear or DoRALinear "
+                f"(got {type(self.head).__name__})"
             )
         merged_head = self.head.merge_and_unload()
         return TinyClassifier(
             W1=np.asarray(self.W1, dtype=np.float64).copy(),
             b1=np.asarray(self.b1, dtype=np.float64).copy(),
             head=merged_head,
+            adapter_kind="merged",
         )
 
     @property
     def mode(self) -> str:
-        """``adapter`` while LoRA A/B exist; ``merged`` after merge_and_unload."""
+        """``adapter`` while LoRA/DoRA exist; ``merged`` after merge_and_unload."""
         return "merged" if isinstance(self.head, MergedLinear) else "adapter"
 
     def n_trainable(self) -> int:
