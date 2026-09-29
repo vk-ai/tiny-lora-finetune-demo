@@ -26,5 +26,7 @@ jobs:
         run: pytest -q
       - name: Run before/after eval CLI
         run: python evals/runner.py
+      - name: Multi-adapter merge eval
+        run: python evals/runner.py --multi-adapter
       - name: Run module CLI
         run: python -m tiny_lora

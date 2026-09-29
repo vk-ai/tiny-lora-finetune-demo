@@ -21,6 +21,8 @@ This repo is that slice.
 | `src/tiny_lora/lora.py` | Toy `LoRALinear` + `merge_and_unload()` → `MergedLinear` (classic `α/r` or rsLoRA `α/√r`) |
 | `src/tiny_lora/dora.py` | DoRA stub: magnitude vector `m` + normalized direction (peft `use_dora=True` analogue) |
 | `src/tiny_lora/qlora.py` | Optional QLoRA *concept* (bitsandbytes import-guarded; numpy fake-4bit always offline-safe) |
+| `src/tiny_lora/multi_adapter.py` | `MultiAdapterHead`: named adapters + `add_weighted_adapter` (linear / cat / TIES-lite) (round 4) |
+| `src/tiny_lora/merge_eval.py` | Two-task A/B adapter demo + merge eval table + single-adapter invariant |
 | `src/tiny_lora/model.py` | Tiny frozen MLP + LoRA classification head |
 | `src/tiny_lora/train.py` | SGD over `A`/`B` only |
 | `src/tiny_lora/eval.py` | Before/after loss + accuracy harness |
@@ -107,6 +109,58 @@ pytest tests/test_eval.py tests/test_train.py -q
 ```
 
 CI fails if after accuracy regresses vs before on this toy task.
+
+## Multiple adapters + weighted merging (round 4)
+
+`MultiAdapterHead` keeps **one frozen base** `W, b` and a dict of **named** LoRA/DoRA adapters that share it (the peft `add_adapter` / `set_adapter` / `add_weighted_adapter` shape, in numpy):
+
+```python
+import numpy as np
+from tiny_lora import MultiAdapterHead
+
+rng = np.random.default_rng(0)
+head = MultiAdapterHead.from_base(W, b)                      # or .from_head(model.head)
+head.add_adapter("A", rank=4, alpha=8.0, rng=rng, scale_mode="rslora")
+head.add_adapter("B", rank=4, alpha=8.0, rng=rng, scale_mode="rslora")
+# ... train each (see merge_eval.build_two_task) ...
+head.add_weighted_adapter(["A", "B"], [1.0, 1.0], "AB", combination_type="linear")
+head.add_weighted_adapter(["A", "B"], [1.0, 1.0], "AB_cat", combination_type="cat")
+head.add_weighted_adapter(["A", "B"], [1.0, 1.0], "AB_ties", combination_type="ties", density=0.5)
+head.add_weighted_adapter(["AB", "B"], [1.0, -1.0], "forget_B")  # negative weight = task negation
+head.set_adapter("AB")                                         # None → base only
+```
+
+| `combination_type` | What it computes | Rank of result | Exact? |
+|---|---|---|---|
+| `linear` | task arithmetic `ΔW = Σ wᵢ·ΔWᵢ` (**negative weights OK**), then SVD re-factorization | `min(Σ rᵢ, out, in)` or `svd_rank` | yes (unless `svd_rank` truncates; `svd_rel_error` reported) |
+| `cat` | stack factors `A=[A₁;A₂]`, `B=[w₁s₁B₁ \| w₂s₂B₂]` | `Σ rᵢ` | yes, no SVD |
+| `ties` | TIES-lite on `τᵢ = wᵢ·ΔWᵢ`: top-`density` trim, then sign election (Σ τ), then disjoint mean | as `linear` | no, by design |
+
+**Invariant (tested for classic LoRA, rsLoRA and DoRA, with every combination type):** `add_weighted_adapter([a], [1.0])` reproduces adapter `a`'s logits (max |Δlogit| about 1e-15). Two details make that hold. Both correspond to the bug report in [peft#3761](https://github.com/huggingface/peft/issues/3761), where one adapter at weight 1.0 came back *different* for rsLoRA and DoRA, silently:
+
+- **Scaling.** Each ΔWᵢ uses *its own* scale (α/r or α/√r). The merged adapter gets **effective scaling 1**, and its factors carry the scale. Re-deriving α/√r from the new rank is the bug, and `test_naive_rescaling_breaks_rslora_invariant` shows it.
+- **DoRA magnitude.** It has no canonical combination. This toy *defines* it as magnitude task arithmetic, `m = m₀ + Σ wᵢ·(mᵢ − m₀)` with `m₀ = ‖W‖_row`, which is exact for one adapter at weight 1.0. The upstream plan is to raise for DoRA, and `dora_policy="raise"` does the same here. Mixing LoRA and DoRA in one merge raises.
+
+**Two-task demo:** adapter `A` learns labels {0,1} and `B` learns {2,3} (4-class blobs, chance 0.25):
+
+```bash
+python evals/runner.py --multi-adapter    # classic / rsLoRA × LoRA / DoRA tables → evals/multi_adapter.json
+```
+
+```text
+adapter          rank  task_A  task_B     all      (classic LoRA, seed 42)
+base                0   0.172   0.109   0.141
+A                   4   1.000   0.000   0.500
+B                   4   0.000   1.000   0.500
+linear              4   1.000   1.000   1.000
+cat                 8   1.000   1.000   1.000
+ties                4   1.000   1.000   1.000
+linear_minus_B      4   1.000   0.000   0.500
+```
+
+The linear, cat and TIES merges solve **both** tasks. Subtracting `B` again (negative weight, cf. [peft#2796](https://github.com/huggingface/peft/issues/2796)) forgets task B. TIES is lossy by design and scores slightly lower on DoRA and rsLoRA runs. Background: [peft model-merging guide](https://huggingface.co/docs/peft/v0.18.0/developer_guides/model_merging) · [TIES, arXiv 2306.01708](https://arxiv.org/abs/2306.01708) · [LoRAX adapter merging](https://loraexchange.ai/guides/merging_adapters/).
+
+**Honesty:** this is a numpy toy of peft `add_weighted_adapter` and TIES. It is not peft, mergekit, or LoRAX, has no DARE, and the numbers come from synthetic blobs, not LLM benchmarks.
 
 ## Design notes
 

@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tiny_lora.config import load_config
 from tiny_lora.eval import format_report, run_before_after
+from tiny_lora.merge_eval import format_multi_adapter_table, run_multi_adapter_eval
 
 
 def _run_one(cfg: dict) -> dict:
@@ -54,6 +55,33 @@ def _sweep(cfg: dict, ranks: list[int]) -> dict:
     }
 
 
+def _multi_adapter(cfg: dict) -> int:
+    reports = []
+    for kind, use_dora in (("lora", False), ("dora", True)):
+        for mode in ("classic", "rslora"):
+            one = deepcopy(cfg)
+            one["lora"]["scaling"] = mode
+            one["lora"]["use_dora"] = use_dora
+            rep = run_multi_adapter_eval(one)
+            print("\n" + format_multi_adapter_table(rep))
+            reports.append(rep)
+    out = ROOT / "evals" / "multi_adapter.json"
+    out.write_text(json.dumps(reports, indent=2) + "\n", encoding="utf-8")
+    print(f"\nWrote {out.relative_to(ROOT)}")
+    for rep in reports:
+        worst = max(rep["single_adapter_invariant_max_abs_logit"].values())
+        if worst > 1e-9:
+            print(f"FAIL: merge([A],[1.0]) != A ({rep['adapter_kind']}/"
+                  f"{rep['scale_mode']}: {worst:.2e})", file=sys.stderr)
+            return 1
+        rows = {r["adapter"]: r for r in rep["rows"]}
+        for name in ("linear", "cat", "ties"):
+            if min(rows[name]["acc_task_A"], rows[name]["acc_task_B"]) <= rep["chance"]:
+                print(f"FAIL: merged {name} not above chance on both tasks", file=sys.stderr)
+                return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Tiny LoRA before/after eval")
     parser.add_argument(
@@ -74,9 +102,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Ranks for --sweep (overrides lora.ranks)",
     )
+    parser.add_argument(
+        "--multi-adapter",
+        action="store_true",
+        help="Train adapters A/B on two label subsets, merge (linear/cat/ties/negation), "
+        "and check merge([A],[1.0]) == A for classic, rsLoRA and DoRA",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
+    if args.multi_adapter:
+        return _multi_adapter(cfg)
     if args.sweep:
         ranks = args.ranks or cfg["lora"].get("ranks") or [2, 4, 8]
         payload = _sweep(cfg, [int(r) for r in ranks])

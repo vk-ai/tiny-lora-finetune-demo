@@ -91,9 +91,11 @@ class TinyClassifier:
         """
         if isinstance(self.head, MergedLinear):
             raise TypeError("merge_and_unload: head already merged")
-        if not isinstance(self.head, (LoRALinear, DoRALinear)):
+        from .multi_adapter import MultiAdapterHead  # local: avoid import cycle
+
+        if not isinstance(self.head, (LoRALinear, DoRALinear, MultiAdapterHead)):
             raise TypeError(
-                "merge_and_unload requires LoRALinear or DoRALinear "
+                "merge_and_unload requires LoRALinear, DoRALinear or MultiAdapterHead "
                 f"(got {type(self.head).__name__})"
             )
         merged_head = self.head.merge_and_unload()
