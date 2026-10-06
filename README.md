@@ -23,6 +23,7 @@ This repo is that slice.
 | `src/tiny_lora/qlora.py` | Optional QLoRA *concept* (bitsandbytes import-guarded; numpy fake-4bit always offline-safe) |
 | `src/tiny_lora/multi_adapter.py` | `MultiAdapterHead`: named adapters + `add_weighted_adapter` (linear / cat / TIES-lite) (round 4) |
 | `src/tiny_lora/merge_eval.py` | Two-task A/B adapter demo + merge eval table + single-adapter invariant |
+| `src/tiny_lora/forgetting.py` | Forgetting/retention check: task A → task B per variant + intruder dimensions (round 5) |
 | `src/tiny_lora/model.py` | Tiny frozen MLP + LoRA classification head |
 | `src/tiny_lora/train.py` | SGD over `A`/`B` only |
 | `src/tiny_lora/eval.py` | Before/after loss + accuracy harness |
@@ -161,6 +162,46 @@ linear_minus_B      4   1.000   0.000   0.500
 The linear, cat and TIES merges solve **both** tasks. Subtracting `B` again (negative weight, cf. [peft#2796](https://github.com/huggingface/peft/issues/2796)) forgets task B. TIES is lossy by design and scores slightly lower on DoRA and rsLoRA runs. Background: [peft model-merging guide](https://huggingface.co/docs/peft/v0.18.0/developer_guides/model_merging) · [TIES, arXiv 2306.01708](https://arxiv.org/abs/2306.01708) · [LoRAX adapter merging](https://loraexchange.ai/guides/merging_adapters/).
 
 **Honesty:** this is a numpy toy of peft `add_weighted_adapter` and TIES. It is not peft, mergekit, or LoRAX, has no DARE, and the numbers come from synthetic blobs, not LLM benchmarks.
+
+## Forgetting / retention check (round 5)
+
+This answers "if I fine-tune again on task B, how much of task A do I lose, per adapter variant?" It reuses the round-4 two-task data: task A is labels {0,1} and task B is labels {2,3}, scored with a 4-way argmax (chance 0.25).
+
+1. **Stage 1:** fine-tune the full head on task A. The result becomes the frozen base `W_A, b_A`.
+2. **Stage 2:** train each variant on task B **only**, from the same base, with the same lr and batch size:
+   - `full_head`: `W` and `b`
+   - `full_W`: `W` only, with the bias frozen as LoRA does
+   - `lora_r{2,4,8}`
+   - `rslora_r8`
+   - `dora_r4`
+3. **Report:** task-A accuracy before and after, forgetting, retention, task-B accuracy after, ‖ΔW‖_F, and an **intruder-dimension** count. That count is the number of singular vectors of `W'` with max |cos| < 0.5 against `W_A` ([arXiv 2410.21228](https://arxiv.org/abs/2410.21228)).
+
+```bash
+python evals/runner.py --forgetting          # 5 seeds, fixed budget + matched learning → evals/forgetting.json
+python evals/runner.py --forgetting --variants full_head lora_r2 lora_r8 --target-b-acc 0.95
+```
+
+Results are means over seeds 42–46 (`A_min` is the worst seed):
+
+```text
+fixed budget (50 epochs)          matched learning (stop at task-B train acc ≥ 0.90)
+variant    A_after  A_min B_after  | epochs A_after  A_min B_after
+full_head    0.010  0.000   0.997  |   10.2   0.863  0.458   0.918
+full_W       0.871  0.609   0.985  |   31.0   0.975  0.922   0.877
+lora_r2      0.212  0.000   1.000  |    8.4   0.648  0.458   0.981
+lora_r4      0.256  0.047   1.000  |    7.4   0.778  0.609   0.972
+lora_r8      0.341  0.172   1.000  |   15.2   0.791  0.623   0.963
+rslora_r8    0.222  0.094   0.997  |    4.6   0.743  0.375   0.956
+dora_r4      0.572  0.422   0.709  |   45.4   0.663  0.426   0.767
+```
+
+What this toy shows. Treat it as small-scale evidence, not a general law:
+
+- **Over-training on B is the main source of forgetting.** Every variant keeps much more of task A when it stops once B is learned. Monitoring the stage-1 metric while you train stage 2 is what the peft maintainers suggest in [peft#2873](https://github.com/huggingface/peft/issues/2873).
+- **"LoRA forgets less" is not automatic here.** With the bias frozen, the full fine-tune (`full_W`) retained the most. At this lr and α/r scaling, LoRA takes much larger weight steps (‖ΔW‖ about 10–24 vs 6–8). Under matched learning, higher rank forgot less (r2 < r4 ≈ r8). Compare the "illusion of equivalence" discussion in [peft#2907](https://github.com/huggingface/peft/issues/2907) and [arXiv 2410.21228](https://arxiv.org/abs/2410.21228). [peft#3542](https://github.com/huggingface/peft/issues/3542) (CLoRA) and [The Neural Base's forgetting walkthrough](https://theneuralbase.com/lora-fundamentals/learn/advanced/catastrophic-forgetting-investigation/) cover mitigations.
+- **The bias matters:** moving `b` is the cheapest way to push classes 0/1 down, and `full_head` uses it.
+
+**Honesty:** the head has only 4 outputs, so rank ≥ 4 is already a full-rank ΔW. The differences come from optimisation dynamics and what is frozen, not from extra capacity. These are synthetic blobs, 5 seeds, and one lr, not LLM benchmarks, and the numbers move with lr and α. CI checks only that stage 1 learns A and every variant learns B above chance. It does not gate on which variant "wins".
 
 ## Design notes
 
