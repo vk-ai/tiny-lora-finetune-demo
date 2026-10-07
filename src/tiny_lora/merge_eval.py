@@ -29,19 +29,25 @@ def _subset(d: Dataset, labels: list[int]) -> Dataset:
     return Dataset(X=d.X[mask], y=d.y[mask])
 
 
-def build_two_task(cfg: dict[str, Any]) -> tuple[TinyClassifier, MultiAdapterHead, Dataset]:
-    """Train adapters ``A`` and ``B`` on disjoint label subsets; return (model, head, test)."""
-    lora = cfg["lora"]
+def two_task_split(cfg: dict[str, Any]) -> tuple[Dataset, Dataset]:
+    """The shared 4-class blob train/test split used by every two-task eval."""
     data = cfg["data"]
-    seed = int(cfg["seed"])
-    train, test = train_test_split(
+    return train_test_split(
         n_train=int(data["n_train"]),
         n_test=max(int(data["n_test"]), 128),
         n_features=int(data["n_features"]),
         n_classes=N_CLASSES,
         noise=float(data["noise"]),
-        seed=seed,
+        seed=int(cfg["seed"]),
     )
+
+
+def build_two_task(cfg: dict[str, Any]) -> tuple[TinyClassifier, MultiAdapterHead, Dataset]:
+    """Train adapters ``A`` and ``B`` on disjoint label subsets; return (model, head, test)."""
+    lora = cfg["lora"]
+    data = cfg["data"]
+    seed = int(cfg["seed"])
+    train, test = two_task_split(cfg)
     rng = np.random.default_rng(seed)
     base = TinyClassifier.create(
         in_features=int(data["n_features"]),
@@ -156,6 +162,7 @@ def format_multi_adapter_table(report: dict[str, Any]) -> str:
 
 __all__ = [
     "TASKS",
+    "two_task_split",
     "build_two_task",
     "single_adapter_invariant",
     "run_multi_adapter_eval",

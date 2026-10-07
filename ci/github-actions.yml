@@ -28,5 +28,7 @@ jobs:
         run: python evals/runner.py
       - name: Multi-adapter merge eval
         run: python evals/runner.py --multi-adapter
+      - name: Forgetting / retention check
+        run: python evals/runner.py --forgetting
       - name: Run module CLI
         run: python -m tiny_lora

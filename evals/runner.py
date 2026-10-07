@@ -14,6 +14,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tiny_lora.config import load_config
 from tiny_lora.eval import format_report, run_before_after
+from tiny_lora.forgetting import (
+    DEFAULT_VARIANTS,
+    format_forgetting_table,
+    run_forgetting_seeds,
+)
 from tiny_lora.merge_eval import format_multi_adapter_table, run_multi_adapter_eval
 
 
@@ -82,6 +87,28 @@ def _multi_adapter(cfg: dict) -> int:
     return 0
 
 
+def _forgetting(cfg: dict, n_seeds: int, target: float, variants: list[str]) -> int:
+    seeds = [int(cfg["seed"]) + i for i in range(n_seeds)]
+    reports = {}
+    for key, tgt in (("fixed_budget", None), ("matched_learning", target)):
+        rep = run_forgetting_seeds(cfg, seeds, variants, target_b_acc=tgt)
+        print("\n" + format_forgetting_table(rep))
+        reports[key] = rep
+    out = ROOT / "evals" / "forgetting.json"
+    out.write_text(json.dumps(reports, indent=2) + "\n", encoding="utf-8")
+    print(f"\nWrote {out.relative_to(ROOT)}")
+    for key, rep in reports.items():
+        if rep["stage1"]["acc_task_A_min"] < 0.9:
+            print(f"FAIL: stage 1 did not learn task A ({key})", file=sys.stderr)
+            return 1
+        for row in rep["rows"]:
+            if row["acc_task_B_after"] <= rep["chance"]:
+                print(f"FAIL: {row['variant']} did not learn task B above chance ({key})",
+                      file=sys.stderr)
+                return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Tiny LoRA before/after eval")
     parser.add_argument(
@@ -108,9 +135,31 @@ def main(argv: list[str] | None = None) -> int:
         help="Train adapters A/B on two label subsets, merge (linear/cat/ties/negation), "
         "and check merge([A],[1.0]) == A for classic, rsLoRA and DoRA",
     )
+    parser.add_argument(
+        "--forgetting",
+        action="store_true",
+        help="Forgetting/retention check: full head on task A, then each variant "
+        "(full head, LoRA ranks, rsLoRA, DoRA) on task B; report task-A accuracy "
+        "before/after (fixed budget and matched learning)",
+    )
+    parser.add_argument("--seeds", type=int, default=5, help="Seeds for --forgetting (default 5)")
+    parser.add_argument(
+        "--target-b-acc",
+        type=float,
+        default=0.9,
+        help="Matched-learning stop: task-B train accuracy (default 0.9)",
+    )
+    parser.add_argument(
+        "--variants",
+        nargs="+",
+        default=list(DEFAULT_VARIANTS),
+        help="Variants for --forgetting, e.g. full_head full_W lora_r2 dora_r4",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
+    if args.forgetting:
+        return _forgetting(cfg, args.seeds, args.target_b_acc, args.variants)
     if args.multi_adapter:
         return _multi_adapter(cfg)
     if args.sweep:

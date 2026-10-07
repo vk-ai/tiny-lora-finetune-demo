@@ -10,3 +10,4 @@ build/
 evals/last_report.json
 .DS_Store
 evals/multi_adapter.json
+evals/forgetting.json
